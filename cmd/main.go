@@ -128,6 +128,9 @@ func main() {
 
 	pw.SetStyle(progress.StyleDefault)
 	pw.Style().Visibility.Value = false
+	pw.Style().Options.Separator = ""
+	pw.Style().Options.DoneString = "done"
+	pw.Style().Options.ErrorString = "error"
 
 	pw.Style().Colors = progress.StyleColorsExample
 	pw.Style().Colors.Percent = text.Colors{text.FgCyan}
@@ -274,9 +277,14 @@ func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project,
 		}
 	}
 
-	var messageLength = 0
-	var keyLength = 0
-	var branchLength = 0
+	var messageHeader = "Action"
+	var keyHeader = "Project"
+	var branchHeader = "Branch"
+	var statusHeader = "Status"
+
+	var messageLength = len(messageHeader)
+	var keyLength = len(keyHeader)
+	var branchLength = len(branchHeader)
 	for _, internalTask := range internalTasks {
 		if len(internalTask.Message) > messageLength {
 			messageLength = len(internalTask.Message)
@@ -305,10 +313,10 @@ func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project,
 		})
 	}
 
-	header := text.Pad("Action", messageLength+2, ' ') +
-		text.Pad("Project", keyLength+2, ' ') +
-		text.Pad("Branch", branchLength+3, ' ') +
-		"Status"
+	header := text.Pad(messageHeader, messageLength+2, ' ') +
+		text.Pad(keyHeader, keyLength+2, ' ') +
+		text.Pad(branchHeader, branchLength+2, ' ') +
+		statusHeader
 
 	return tasks, header
 }
