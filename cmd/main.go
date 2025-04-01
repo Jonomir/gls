@@ -8,12 +8,9 @@ import (
 	"github.com/rodaine/table"
 	"glsync/pkg/git"
 	"glsync/pkg/gitlab"
-	"go.uber.org/atomic"
+	"glsync/pkg/gls"
 	"log"
-	"math/rand"
 	"os"
-	"strconv"
-	"sync"
 	"time"
 )
 
@@ -67,29 +64,6 @@ func loadConfig() Config {
 	return cfg
 }
 
-type ProjectPair struct {
-	GitlabProject *gitlab.Project
-	LocalProject  *git.Project
-}
-
-type Action string
-
-const (
-	Clone  Action = "clone"
-	Pull   Action = "pull"
-	Delete Action = "delete"
-)
-
-type Task struct {
-	Path        string
-	Branch      string
-	Action      Action
-	ProjectPair *ProjectPair
-	Status      atomic.String
-	Error       atomic.Error
-	Completed   atomic.Bool
-}
-
 func main() {
 	cfg := loadConfig()
 
@@ -108,84 +82,127 @@ func main() {
 		log.Fatalf("Error getting local projects: %v", err)
 	}
 
-	tasks := createTasks(gitlabProjects, localProjects)
-	openTasks := getOpenTasks(tasks)
+	tasks := createTasks(gitlabProjects, localProjects, cfg.Path.Local)
+	openTasks := gls.FilterTasks(tasks, gls.Open)
 
 	go renderer(tasks)
 
-	runTasks(openTasks, 5)
-}
+	gls.RunTasks(openTasks, 5, func(task *gls.Task) error {
+		switch task.Action {
+		case gls.Clone:
+			return git.CloneProject(task.ProjectPair.GitlabProject.CloneUrl, task.LocalPath)
+		case gls.Pull:
+			return git.PullProject(task.LocalPath)
+		case gls.Delete:
+			return git.DeleteProject(task.LocalPath)
+		}
+		return nil
+	})
 
-func getOpenTasks(tasks []*Task) []*Task {
-	var openTasks []*Task
-	for _, task := range tasks {
-		if !task.Completed.Load() {
-			openTasks = append(openTasks, task)
+	for _, task := range openTasks {
+		if task.GetError() != nil {
+			switch task.Action {
+			case gls.Clone:
+				log.Printf("Failed cloning %s %v\n", task.Path, task.GetError())
+			case gls.Pull:
+				log.Printf("Failed pulling %s %v\n", task.Path, task.GetError())
+			case gls.Delete:
+				log.Printf("Failed deleting %s %v\n", task.Path, task.GetError())
+			}
 		}
 	}
-	return openTasks
 }
 
-func runTasks(tasks []*Task, numWorkers int) {
-	taskQueue := make(chan *Task, len(tasks))
-	var wg sync.WaitGroup
-	for i := 1; i <= numWorkers; i++ {
-		wg.Add(1)
-		go worker(taskQueue, &wg)
-	}
-
-	for _, task := range tasks {
-		taskQueue <- task
-	}
-
-	close(taskQueue)
-	wg.Wait()
-}
-
-func renderer(tasks []*Task) {
-	printTable(tasks)
+func renderer(tasks []*gls.Task) {
+	linesToClear := printProgressingTasksTable(tasks)
 
 	for {
-		cursor.ClearLinesUp(len(tasks) + 1)
-		printTable(tasks)
+		cursor.ClearLinesUp(linesToClear)
+		linesToClear = printProgressingTasksTable(tasks)
 
 		time.Sleep(200 * time.Millisecond)
 	}
 }
 
-func printTable(tasks []*Task) {
+func printProgressingTasksTable(tasks []*gls.Task) int {
+	progressingTasks := gls.FilterTasks(tasks, gls.Progressing)
+
 	headerFmt := color.New(color.FgGreen, color.Underline).SprintfFunc()
 	columnFmt := color.New(color.FgYellow).SprintfFunc()
 
-	tbl := table.New("Repo", "Branch", "Action", "Status")
+	tbl := table.New("Repo", "Branch", "Action", "Status", "Message")
 	tbl.WithHeaderFormatter(headerFmt).WithFirstColumnFormatter(columnFmt)
 
-	for _, task := range tasks {
-		tbl.AddRow(task.Path, task.Branch, task.Action, task.Status.Load())
+	for _, task := range progressingTasks {
+		tbl.AddRow(task.Path, task.Branch, task.Action, task.GetStatus(), task.GetMessage())
 	}
 
 	tbl.Print()
+
+	return len(progressingTasks) + 1
 }
 
-func worker(taskQueue <-chan *Task, wg *sync.WaitGroup) {
-	defer wg.Done()
+func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project, localPath string) []*gls.Task {
+	projectPairs := pairProjects(gitlabProjects, localProjects)
 
-	for task := range taskQueue {
+	var tasks []*gls.Task
+	for key, projectPair := range projectPairs {
+		var task *gls.Task
 
-		for i := 0; i < 300; i++ {
-
-			task.Status.Store("Progressing " + strconv.Itoa(i))
-			time.Sleep(time.Millisecond * time.Duration(rand.Intn(500)))
+		// We have a remote and local copy, only need to pull
+		if projectPair.GitlabProject != nil && projectPair.LocalProject != nil {
+			if projectPair.GitlabProject.DefaultBranch == projectPair.LocalProject.Branch {
+				task = gls.NewTask(key, projectPair,
+					localPath+"/"+projectPair.LocalProject.Path,
+					projectPair.LocalProject.Branch,
+					gls.Pull, gls.Open)
+			} else {
+				task = gls.NewTask(key, projectPair,
+					localPath+"/"+projectPair.LocalProject.Path,
+					projectPair.LocalProject.Branch,
+					gls.Pull, gls.Completed)
+				task.SetMessage("Skipped, non default branch")
+			}
 		}
+
+		// We don't have a local copy, so we clone
+		if projectPair.GitlabProject != nil && projectPair.LocalProject == nil {
+			task = gls.NewTask(key, projectPair,
+				localPath+"/"+projectPair.GitlabProject.Path,
+				projectPair.GitlabProject.DefaultBranch,
+				gls.Clone, gls.Open)
+		}
+
+		// We only have a local copy, ask if we should delete it
+		if projectPair.GitlabProject == nil && projectPair.LocalProject != nil {
+
+			//TODO implement user prompt
+			if true {
+				task = gls.NewTask(key, projectPair,
+					localPath+"/"+projectPair.LocalProject.Path,
+					projectPair.LocalProject.Branch,
+					gls.Delete, gls.Open)
+			} else {
+				task = gls.NewTask(key, projectPair,
+					localPath+"/"+projectPair.LocalProject.Path,
+					projectPair.LocalProject.Branch,
+					gls.Delete, gls.Completed)
+				task.SetMessage("Skipped, requested by user")
+			}
+		}
+
+		tasks = append(tasks, task)
 	}
+
+	return tasks
 }
 
-func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project) []*Task {
-	projectPairs := make(map[string]*ProjectPair)
+func pairProjects(gitlabProjects []*gitlab.Project, localProjects []*git.Project) map[string]*gls.ProjectPair {
+	projectPairs := make(map[string]*gls.ProjectPair)
 	for _, project := range gitlabProjects {
 		projectPair := projectPairs[project.Path]
 		if projectPair == nil {
-			projectPair = &ProjectPair{}
+			projectPair = &gls.ProjectPair{}
 		}
 
 		projectPair.GitlabProject = project
@@ -195,82 +212,11 @@ func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project)
 	for _, project := range localProjects {
 		projectPair := projectPairs[project.Path]
 		if projectPair == nil {
-			projectPair = &ProjectPair{}
+			projectPair = &gls.ProjectPair{}
 		}
 
 		projectPair.LocalProject = project
 		projectPairs[project.Path] = projectPair
 	}
-
-	var tasks []*Task
-	for key, projectPair := range projectPairs {
-
-		// We have a remote and local copy, only need to pull
-		if projectPair.GitlabProject != nil && projectPair.LocalProject != nil {
-
-			if projectPair.GitlabProject.DefaultBranch == projectPair.LocalProject.Branch {
-				// Default branch is checked out, we can pull
-				tasks = append(tasks, &Task{
-					Path:        key,
-					Branch:      projectPair.LocalProject.Branch,
-					ProjectPair: projectPair,
-					Action:      Pull,
-					Completed:   *atomic.NewBool(false),
-					Status:      *atomic.NewString("Waiting..."),
-				})
-			} else {
-				// Non default branch checked out, skip pulling
-				tasks = append(tasks, &Task{
-					Path:        key,
-					Branch:      projectPair.LocalProject.Branch,
-					ProjectPair: projectPair,
-					Action:      Pull,
-					Completed:   *atomic.NewBool(true),
-					Status:      *atomic.NewString("Skipped"),
-				})
-			}
-
-		}
-
-		// We don't have a local copy, so we clone
-		if projectPair.GitlabProject != nil && projectPair.LocalProject == nil {
-			tasks = append(tasks, &Task{
-				Path:        key,
-				Branch:      projectPair.GitlabProject.DefaultBranch,
-				ProjectPair: projectPair,
-				Action:      Clone,
-				Completed:   *atomic.NewBool(false),
-				Status:      *atomic.NewString("Waiting..."),
-			})
-		}
-
-		// We only have a local copy, ask if we should delete it
-		if projectPair.GitlabProject == nil && projectPair.LocalProject != nil {
-
-			//TODO implement user prompt
-			if true {
-				// We should delete
-				tasks = append(tasks, &Task{
-					Path:        key,
-					Branch:      projectPair.LocalProject.Branch,
-					ProjectPair: projectPair,
-					Action:      Delete,
-					Completed:   *atomic.NewBool(false),
-					Status:      *atomic.NewString("Waiting..."),
-				})
-			} else {
-				// user skipped
-				tasks = append(tasks, &Task{
-					Path:        key,
-					Branch:      projectPair.LocalProject.Branch,
-					ProjectPair: projectPair,
-					Action:      Delete,
-					Completed:   *atomic.NewBool(true),
-					Status:      *atomic.NewString("Skipped"),
-				})
-			}
-		}
-
-	}
-	return tasks
+	return projectPairs
 }

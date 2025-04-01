@@ -44,3 +44,42 @@ func GetLocalProjects(localPath string) ([]*Project, error) {
 
 	return projects, err
 }
+
+func CloneProject(cloneUrl string, localPath string) error {
+	_, err := git.PlainClone(localPath, false, &git.CloneOptions{
+		URL:      cloneUrl,
+		Progress: nil, //TODO
+	})
+
+	return err
+}
+
+func PullProject(localPath string) error {
+	repo, err := git.PlainOpen(localPath)
+	if err != nil {
+		return err
+	}
+
+	worktree, err := repo.Worktree()
+	if err != nil {
+		return err
+	}
+
+	err = worktree.Pull(&git.PullOptions{
+		Progress: nil, //TODO
+	})
+
+	if err == git.NoErrAlreadyUpToDate {
+		return nil
+	}
+
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func DeleteProject(localPath string) error {
+	return os.RemoveAll(localPath)
+}
