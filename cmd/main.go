@@ -5,9 +5,9 @@ import (
 	"github.com/cristalhq/aconfig"
 	"github.com/cristalhq/aconfig/aconfigdotenv"
 	"github.com/jedib0t/go-pretty/v6/progress"
+	"github.com/jedib0t/go-pretty/v6/text"
 	"glsync/pkg/git"
 	"glsync/pkg/gitlab"
-	"glsync/pkg/gls"
 	"go.uber.org/atomic"
 	"log"
 	"os"
@@ -83,6 +83,7 @@ type Task struct {
 	ProjectPair *ProjectPair
 	Action      Action
 	Tracker     *progress.Tracker
+	Skipped     bool
 	Error       atomic.Error
 }
 
@@ -105,7 +106,6 @@ func main() {
 	}
 
 	tasks := createTasks(gitlabProjects, localProjects, cfg.Path.Local)
-	openTasks := getOpenTasks(tasks)
 
 	pw := progress.NewWriter()
 	pw.SetMessageLength(50)
@@ -117,19 +117,15 @@ func main() {
 	pw.SetUpdateFrequency(time.Millisecond * 100)
 	pw.Style().Colors = progress.StyleColorsExample
 
-	pw.Render()
+	go pw.Render()
+	executeTasks(tasks, 1, pw)
 
-	for _, task := range tasks {
-		pw.AppendTracker(task.Tracker)
-	}
-
-	executeTasks(openTasks, 5)
-
+	time.Sleep(time.Millisecond * 100) // wait for one more render cycle
 	pw.Stop()
 
-	for _, task := range openTasks {
+	for _, task := range tasks {
 		if task.Error.Load() != nil {
-			fmt.Printf("Failed to %s %s %v\n", task.Action, task.Path, task.Error.Load())
+			text.FgRed.Sprintf("Failed to %s %s %v\n", task.Action, task.Path, task.Error.Load())
 		}
 	}
 }
@@ -144,7 +140,7 @@ func getOpenTasks(tasks []*Task) []*Task {
 	return openTasks
 }
 
-func executeTasks(tasks []*Task, numWorkers int) {
+func executeTasks(tasks []*Task, numWorkers int, pw progress.Writer) {
 	taskQueue := make(chan *Task, len(tasks))
 	var wg sync.WaitGroup
 	for i := 1; i <= numWorkers; i++ {
@@ -152,13 +148,18 @@ func executeTasks(tasks []*Task, numWorkers int) {
 		go func() {
 			defer wg.Done()
 			for task := range taskQueue {
-				task.Tracker.Start()
-				err := executeTask(task)
-				if err != nil {
-					task.Tracker.MarkAsErrored()
-					task.Error.Store(err)
-				} else {
+				pw.AppendTracker(task.Tracker)
+				if task.Skipped {
 					task.Tracker.MarkAsDone()
+				} else {
+					task.Tracker.Start()
+					err := executeTask(task)
+					if err != nil {
+						task.Tracker.MarkAsErrored()
+						task.Error.Store(err)
+					} else {
+						task.Tracker.MarkAsDone()
+					}
 				}
 			}
 		}()
@@ -175,17 +176,13 @@ func executeTasks(tasks []*Task, numWorkers int) {
 func executeTask(task *Task) error {
 	switch task.Action {
 	case Clone:
-		return git.CloneProject(task.ProjectPair.GitlabProject.CloneUrl, task.Path, gls.NewLineWriter(func(line string) {
-			// TODO parse total and current
-			//task.Tracker.SetValue()
-			//task.Tracker.UpdateTotal()
-		}))
+		return git.CloneProject(task.ProjectPair.GitlabProject.CloneUrl, task.Path, func(line string) {
+			println(line)
+		})
 	case Pull:
-		return git.PullProject(task.Path, gls.NewLineWriter(func(line string) {
-			// TODO parse total and current
-			//task.Tracker.SetValue()
-			//task.Tracker.UpdateTotal()
-		}))
+		return git.PullProject(task.Path, func(line string) {
+			println(line)
+		})
 	case Delete:
 		return git.DeleteProject(task.Path)
 	}
@@ -213,12 +210,11 @@ func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project,
 					Path:        localPath + "/" + key,
 					ProjectPair: projectPair,
 					Action:      Pull,
+					Skipped:     true,
 					Tracker: &progress.Tracker{
 						Message: "Skipped pulling " + key + " " + projectPair.LocalProject.Branch,
 					},
 				}
-
-				task.Tracker.MarkAsDone()
 			}
 		}
 
@@ -244,7 +240,7 @@ func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project,
 					ProjectPair: projectPair,
 					Action:      Delete,
 					Tracker: &progress.Tracker{
-						Message: "Deleting " + key + " " + projectPair.GitlabProject.DefaultBranch,
+						Message: "Deleting " + key + " " + projectPair.LocalProject.Branch,
 					},
 				}
 			} else {
@@ -252,11 +248,11 @@ func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project,
 					Path:        localPath + "/" + key,
 					ProjectPair: projectPair,
 					Action:      Delete,
+					Skipped:     true,
 					Tracker: &progress.Tracker{
-						Message: "Skipped deleting " + key + " " + projectPair.GitlabProject.DefaultBranch,
+						Message: "Skipped deleting " + key + " " + projectPair.LocalProject.Branch,
 					},
 				}
-				task.Tracker.MarkAsDone()
 			}
 		}
 

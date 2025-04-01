@@ -1,9 +1,10 @@
 package git
 
 import (
+	"bufio"
 	"github.com/go-git/go-git/v5"
-	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -46,41 +47,44 @@ func GetLocalProjects(localPath string) ([]*Project, error) {
 	return projects, err
 }
 
-func CloneProject(cloneUrl string, localPath string, progress io.Writer) error {
-	_, err := git.PlainClone(localPath, false, &git.CloneOptions{
-		URL:      cloneUrl,
-		Progress: progress,
-	})
-
-	return err
-}
-
-func PullProject(localPath string, progress io.Writer) error {
-	repo, err := git.PlainOpen(localPath)
-	if err != nil {
-		return err
-	}
-
-	worktree, err := repo.Worktree()
-	if err != nil {
-		return err
-	}
-
-	err = worktree.Pull(&git.PullOptions{
-		Progress: progress,
-	})
-
-	if err == git.NoErrAlreadyUpToDate {
-		return nil
-	}
-
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func DeleteProject(localPath string) error {
 	return os.RemoveAll(localPath)
+}
+
+// It would be nice to use go-git for clone and pull too, but progress reporting is lacking
+// see https://github.com/go-git/go-git/issues/1089
+
+func CloneProject(cloneUrl string, localPath string, lineProcessor func(string)) error {
+	cmd := exec.Command("git", "clone", "--progress", cloneUrl, localPath)
+	return execCommand(cmd, lineProcessor)
+}
+
+func PullProject(localPath string, lineProcessor func(string)) error {
+	cmd := exec.Command("git", "pull", "--progress")
+	cmd.Dir = localPath
+	return execCommand(cmd, lineProcessor)
+}
+
+func execCommand(cmd *exec.Cmd, lineProcessor func(string)) error {
+	stderr, err := cmd.StderrPipe() // git reports progress on stderr
+	if err != nil {
+		return err
+	}
+
+	err = cmd.Start()
+	if err != nil {
+		return err
+	}
+
+	scanner := bufio.NewScanner(stderr)
+	for scanner.Scan() {
+		lineProcessor(scanner.Text())
+	}
+
+	err = scanner.Err()
+	if err != nil {
+		return err
+	}
+
+	return cmd.Wait()
 }
