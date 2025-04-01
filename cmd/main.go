@@ -149,6 +149,7 @@ func main() {
 	time.Sleep(time.Millisecond * 100) // wait for one more render cycle
 	pw.Stop()
 
+	println()
 	for _, task := range tasks {
 		if task.Error.Load() != nil {
 			println(text.FgHiRed.Sprintf("Failed to %s %s %v", task.Action, task.Path, task.Error.Load()))

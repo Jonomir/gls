@@ -2,6 +2,7 @@ package git
 
 import (
 	"bufio"
+	"fmt"
 	"github.com/go-git/go-git/v5"
 	"os"
 	"os/exec"
@@ -76,10 +77,13 @@ func execCommand(cmd *exec.Cmd, lineProcessor func(string)) error {
 		return err
 	}
 
+	var out string
 	scanner := bufio.NewScanner(stderr)
 	scanner.Split(scanLines)
 	for scanner.Scan() {
-		lineProcessor(scanner.Text())
+		line := scanner.Text()
+		out += fmt.Sprintln(line)
+		lineProcessor(line)
 	}
 
 	err = scanner.Err()
@@ -87,7 +91,12 @@ func execCommand(cmd *exec.Cmd, lineProcessor func(string)) error {
 		return err
 	}
 
-	return cmd.Wait()
+	err = cmd.Wait()
+	if err != nil {
+		return fmt.Errorf("%v\n%s", err, out)
+	}
+
+	return nil
 }
 
 func scanLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
