@@ -2,6 +2,7 @@ package main
 
 import (
 	"atomicgo.dev/cursor"
+	"fmt"
 	"github.com/cristalhq/aconfig"
 	"github.com/cristalhq/aconfig/aconfigdotenv"
 	"github.com/fatih/color"
@@ -51,10 +52,10 @@ func loadConfig() Config {
 	}
 
 	if *helpFlag {
-		println("Usage: gls [flags]")
+		fmt.Println("Usage: gls [flags]")
 		flags.PrintDefaults()
-		println("Flags can also be passed via environment variables with prefix 'GLS_'")
-		println("Or via file at $HOME/.gls in format KEY=value")
+		fmt.Println("Flags can also be passed via environment variables with prefix 'GLS_'")
+		fmt.Println("Or via file at $HOME/.gls in format KEY=value")
 		os.Exit(0)
 	}
 
@@ -90,9 +91,13 @@ func main() {
 	gls.RunTasks(openTasks, 5, func(task *gls.Task) error {
 		switch task.Action {
 		case gls.Clone:
-			return git.CloneProject(task.ProjectPair.GitlabProject.CloneUrl, task.LocalPath)
+			return git.CloneProject(task.ProjectPair.GitlabProject.CloneUrl, task.LocalPath, gls.NewLineWriter(func(line string) {
+				task.SetMessage(line)
+			}))
 		case gls.Pull:
-			return git.PullProject(task.LocalPath)
+			return git.PullProject(task.LocalPath, gls.NewLineWriter(func(line string) {
+				task.SetMessage(line)
+			}))
 		case gls.Delete:
 			return git.DeleteProject(task.LocalPath)
 		}
@@ -101,14 +106,7 @@ func main() {
 
 	for _, task := range openTasks {
 		if task.GetError() != nil {
-			switch task.Action {
-			case gls.Clone:
-				log.Printf("Failed cloning %s %v\n", task.Path, task.GetError())
-			case gls.Pull:
-				log.Printf("Failed pulling %s %v\n", task.Path, task.GetError())
-			case gls.Delete:
-				log.Printf("Failed deleting %s %v\n", task.Path, task.GetError())
-			}
+			fmt.Printf("Failed to %s %s %v\n", task.Action, task.Path, task.GetError())
 		}
 	}
 }

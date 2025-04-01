@@ -2,6 +2,7 @@ package git
 
 import (
 	"github.com/go-git/go-git/v5"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -45,16 +46,16 @@ func GetLocalProjects(localPath string) ([]*Project, error) {
 	return projects, err
 }
 
-func CloneProject(cloneUrl string, localPath string) error {
+func CloneProject(cloneUrl string, localPath string, progress io.Writer) error {
 	_, err := git.PlainClone(localPath, false, &git.CloneOptions{
 		URL:      cloneUrl,
-		Progress: nil, //TODO
+		Progress: progress,
 	})
 
 	return err
 }
 
-func PullProject(localPath string) error {
+func PullProject(localPath string, progress io.Writer) error {
 	repo, err := git.PlainOpen(localPath)
 	if err != nil {
 		return err
@@ -66,7 +67,7 @@ func PullProject(localPath string) error {
 	}
 
 	err = worktree.Pull(&git.PullOptions{
-		Progress: nil, //TODO
+		Progress: progress,
 	})
 
 	if err == git.NoErrAlreadyUpToDate {

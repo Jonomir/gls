@@ -12,20 +12,20 @@ type ProjectPair struct {
 	LocalProject  *git.Project
 }
 
-type Action int32
+type Action string
 
 const (
-	Clone Action = iota
-	Pull
-	Delete
+	Clone  Action = "clone"
+	Pull   Action = "pull"
+	Delete Action = "delete"
 )
 
-type Status int32
+type Status string
 
 const (
-	Open Status = iota
-	Progressing
-	Completed
+	Open        Status = "open"
+	Progressing Status = "progressing"
+	Completed   Status = "completed"
 )
 
 type Task struct {
@@ -34,7 +34,7 @@ type Task struct {
 	Branch      string
 	ProjectPair *ProjectPair
 	Action      Action
-	status      atomic.Int32
+	status      atomic.String
 	message     atomic.String
 	error       atomic.Error
 }
@@ -52,7 +52,7 @@ func NewTask(path string, projectPair *ProjectPair, localPath string, branch str
 }
 
 func (t *Task) SetStatus(status Status) {
-	t.status.Store(int32(status))
+	t.status.Store(string(status))
 }
 
 func (t *Task) GetStatus() Status {
