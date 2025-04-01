@@ -11,6 +11,8 @@ import (
 	"go.uber.org/atomic"
 	"log"
 	"os"
+	"regexp"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -116,6 +118,7 @@ func main() {
 	pw.SetTrackerPosition(progress.PositionRight)
 	pw.SetUpdateFrequency(time.Millisecond * 100)
 	pw.Style().Colors = progress.StyleColorsExample
+	pw.SetPinnedMessages("Syncing projects...")
 
 	go pw.Render()
 	executeTasks(tasks, 1, pw)
@@ -128,16 +131,6 @@ func main() {
 			text.FgRed.Sprintf("Failed to %s %s %v\n", task.Action, task.Path, task.Error.Load())
 		}
 	}
-}
-
-func getOpenTasks(tasks []*Task) []*Task {
-	var openTasks []*Task
-	for _, task := range tasks {
-		if !task.Tracker.IsDone() {
-			openTasks = append(openTasks, task)
-		}
-	}
-	return openTasks
 }
 
 func executeTasks(tasks []*Task, numWorkers int, pw progress.Writer) {
@@ -174,15 +167,24 @@ func executeTasks(tasks []*Task, numWorkers int, pw progress.Writer) {
 }
 
 func executeTask(task *Task) error {
+	pattern := regexp.MustCompile(`^Receiving objects:.*\((\d+)/(\d+)\)`)
+
+	lineProcessor := func(line string) {
+		matches := pattern.FindStringSubmatch(line)
+
+		if len(matches) == 3 { // matches[0] is the full match, [1] and [2] are the two numbers
+			current, _ := strconv.Atoi(matches[1])
+			total, _ := strconv.Atoi(matches[2])
+			task.Tracker.UpdateTotal(int64(total))
+			task.Tracker.SetValue(int64(current))
+		}
+	}
+
 	switch task.Action {
 	case Clone:
-		return git.CloneProject(task.ProjectPair.GitlabProject.CloneUrl, task.Path, func(line string) {
-			println(line)
-		})
+		return git.CloneProject(task.ProjectPair.GitlabProject.CloneUrl, task.Path, lineProcessor)
 	case Pull:
-		return git.PullProject(task.Path, func(line string) {
-			println(line)
-		})
+		return git.PullProject(task.Path, lineProcessor)
 	case Delete:
 		return git.DeleteProject(task.Path)
 	}
