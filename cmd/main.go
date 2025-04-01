@@ -66,11 +66,6 @@ func loadConfig() Config {
 	return cfg
 }
 
-type ProjectPair struct {
-	GitlabProject *gitlab.Project
-	LocalProject  *git.Project
-}
-
 type Action string
 
 const (
@@ -80,12 +75,12 @@ const (
 )
 
 type Task struct {
-	Path        string
-	ProjectPair *ProjectPair
-	Action      Action
-	Tracker     *progress.Tracker
-	Skipped     bool
-	Error       atomic.Error
+	Path     string
+	CloneUrl string
+	Action   Action
+	Tracker  *progress.Tracker
+	Skipped  bool
+	Error    atomic.Error
 }
 
 func main() {
@@ -108,24 +103,38 @@ func main() {
 		log.Fatalf("Error getting local projects: %v", err)
 	}
 
-	println(text.FgCyan.Sprintf("Creating tasklist"))
 	tasks := createTasks(gitlabProjects, localProjects, cfg.Path.Local)
 
+	var messageLength = 0
+	for _, task := range tasks {
+		if len(task.Tracker.Message) > messageLength {
+			messageLength = len(task.Tracker.Message)
+		}
+	}
+
 	pw := progress.NewWriter()
-	pw.SetMessageLength(50)
+	pw.SetUpdateFrequency(time.Millisecond * 100)
 	pw.SetNumTrackersExpected(len(tasks))
 	pw.SetSortBy(progress.SortByMessage)
-	pw.SetStyle(progress.StyleDefault)
-	pw.SetTrackerLength(40)
 	pw.SetTrackerPosition(progress.PositionRight)
-	pw.SetUpdateFrequency(time.Millisecond * 100)
+	pw.SetMessageLength(messageLength)
+	pw.SetTrackerLength(40)
+
+	pw.SetStyle(progress.StyleDefault)
 	pw.Style().Visibility.Value = false
+
 	pw.Style().Colors = progress.StyleColorsExample
 	pw.Style().Colors.Percent = text.Colors{text.FgCyan}
+	pw.Style().Colors.Error = text.Colors{text.FgHiRed}
+
+	pw.Style().Options.TimeInProgressPrecision = time.Millisecond
+	pw.Style().Options.TimeDonePrecision = time.Millisecond
+
+	pw.Style().Options.DoneString = "✔"
+	pw.Style().Options.ErrorString = "X"
 
 	go pw.Render()
 
-	println(text.FgCyan.Sprintf("Starting task execution"))
 	executeTasks(tasks, 5, pw)
 
 	time.Sleep(time.Millisecond * 100) // wait for one more render cycle
@@ -187,7 +196,7 @@ func executeTask(task *Task) error {
 
 	switch task.Action {
 	case Clone:
-		return git.CloneProject(task.ProjectPair.GitlabProject.CloneUrl, task.Path, lineProcessor)
+		return git.CloneProject(task.CloneUrl, task.Path, lineProcessor)
 	case Pull:
 		return git.PullProject(task.Path, lineProcessor)
 	case Delete:
@@ -196,45 +205,47 @@ func executeTask(task *Task) error {
 	return nil
 }
 
-func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project, localPath string) []*Task {
-	var tasks []*Task
-	for key, projectPair := range pairProjects(gitlabProjects, localProjects) {
-		var task *Task
+type InternalTask struct {
+	Key      string
+	Action   Action
+	CloneUrl string
+	Skipped  bool
+	Message  string
+	Branch   string
+}
 
+func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project, localPath string) []*Task {
+	var internalTasks []*InternalTask
+	for key, projectPair := range pairProjects(gitlabProjects, localProjects) {
 		// We have a remote and local copy, only need to pull
 		if projectPair.GitlabProject != nil && projectPair.LocalProject != nil {
 			if projectPair.GitlabProject.DefaultBranch == projectPair.LocalProject.Branch {
-				task = &Task{
-					Path:        localPath + "/" + key,
-					ProjectPair: projectPair,
-					Action:      Pull,
-					Tracker: &progress.Tracker{
-						Message: "Pulling " + key + " " + projectPair.LocalProject.Branch,
-					},
-				}
+				internalTasks = append(internalTasks, &InternalTask{
+					Key:     key,
+					Action:  Pull,
+					Message: "Pulling",
+					Branch:  projectPair.LocalProject.Branch,
+				})
 			} else {
-				task = &Task{
-					Path:        localPath + "/" + key,
-					ProjectPair: projectPair,
-					Action:      Pull,
-					Skipped:     true,
-					Tracker: &progress.Tracker{
-						Message: "Skipped pulling " + key + " " + projectPair.LocalProject.Branch,
-					},
-				}
+				internalTasks = append(internalTasks, &InternalTask{
+					Key:     key,
+					Action:  Pull,
+					Skipped: true,
+					Message: "Skipped pulling",
+					Branch:  projectPair.LocalProject.Branch,
+				})
 			}
 		}
 
 		// We don't have a local copy, so we clone
 		if projectPair.GitlabProject != nil && projectPair.LocalProject == nil {
-			task = &Task{
-				Path:        localPath + "/" + key,
-				ProjectPair: projectPair,
-				Action:      Clone,
-				Tracker: &progress.Tracker{
-					Message: "Cloning " + key + " " + projectPair.GitlabProject.DefaultBranch,
-				},
-			}
+			internalTasks = append(internalTasks, &InternalTask{
+				Key:      key,
+				Action:   Clone,
+				Message:  "Cloning",
+				CloneUrl: projectPair.GitlabProject.CloneUrl,
+				Branch:   projectPair.GitlabProject.DefaultBranch,
+			})
 		}
 
 		// We only have a local copy, ask if we should delete it
@@ -242,31 +253,67 @@ func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project,
 
 			//TODO implement user prompt
 			if true {
-				task = &Task{
-					Path:        localPath + "/" + key,
-					ProjectPair: projectPair,
-					Action:      Delete,
-					Tracker: &progress.Tracker{
-						Message: "Deleting " + key + " " + projectPair.LocalProject.Branch,
-					},
-				}
+				internalTasks = append(internalTasks, &InternalTask{
+					Key:     key,
+					Action:  Delete,
+					Message: "Deleting",
+					Branch:  projectPair.LocalProject.Branch,
+				})
 			} else {
-				task = &Task{
-					Path:        localPath + "/" + key,
-					ProjectPair: projectPair,
-					Action:      Delete,
-					Skipped:     true,
-					Tracker: &progress.Tracker{
-						Message: "Skipped deleting " + key + " " + projectPair.LocalProject.Branch,
-					},
-				}
+				internalTasks = append(internalTasks, &InternalTask{
+					Key:     key,
+					Action:  Delete,
+					Skipped: true,
+					Message: "Skipped deleting",
+					Branch:  projectPair.LocalProject.Branch,
+				})
 			}
 		}
-
-		tasks = append(tasks, task)
 	}
 
+	var messageLength = 0
+	var keyLength = 0
+	var branchLength = 0
+	for _, internalTask := range internalTasks {
+		if len(internalTask.Message) > messageLength {
+			messageLength = len(internalTask.Message)
+		}
+		if len(internalTask.Key) > keyLength {
+			keyLength = len(internalTask.Key)
+		}
+		if len(internalTask.Branch) > branchLength {
+			branchLength = len(internalTask.Branch)
+		}
+	}
+
+	var tasks []*Task
+	for _, internalTask := range internalTasks {
+		tasks = append(tasks, &Task{
+			Path:     localPath + "/" + internalTask.Key,
+			CloneUrl: internalTask.CloneUrl,
+			Action:   internalTask.Action,
+			Skipped:  internalTask.Skipped,
+			Error:    atomic.Error{},
+			Tracker: &progress.Tracker{
+				Message: text.Pad(internalTask.Message, messageLength+2, ' ') +
+					text.Pad(internalTask.Key, keyLength+2, ' ') +
+					text.Pad(internalTask.Branch, branchLength+2, ' '),
+			},
+		})
+	}
+
+	println(text.FgHiGreen.Sprintf("\n" +
+		text.Pad("Action", messageLength+2, ' ') +
+		text.Pad("Project", keyLength+2, ' ') +
+		text.Pad("Branch", branchLength+3, ' ') +
+		"Status"))
+
 	return tasks
+}
+
+type ProjectPair struct {
+	GitlabProject *gitlab.Project
+	LocalProject  *git.Project
 }
 
 func pairProjects(gitlabProjects []*gitlab.Project, localProjects []*git.Project) map[string]*ProjectPair {
