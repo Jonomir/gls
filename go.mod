@@ -1,4 +1,4 @@
-module glsync
+module gls
 
 go 1.24.1
 
