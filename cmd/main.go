@@ -106,7 +106,9 @@ func main() {
 		log.Fatalf("Error getting local projects: %v", err)
 	}
 
-	tasks := createTasks(gitlabProjects, localProjects, cfg.Path.Local)
+	println(text.FgCyan.Sprintf("Determining actions"))
+
+	tasks, header := createTasks(gitlabProjects, localProjects, cfg.Path.Local)
 
 	var messageLength = 0
 	for _, task := range tasks {
@@ -133,9 +135,7 @@ func main() {
 	pw.Style().Options.TimeInProgressPrecision = time.Millisecond
 	pw.Style().Options.TimeDonePrecision = time.Millisecond
 
-	pw.Style().Options.DoneString = "✔"
-	pw.Style().Options.ErrorString = "X"
-
+	println(text.FgHiGreen.Sprintf("\n%s", header))
 	go pw.Render()
 
 	executeTasks(tasks, 5, pw)
@@ -217,7 +217,7 @@ type InternalTask struct {
 	Branch   string
 }
 
-func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project, localPath string) []*Task {
+func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project, localPath string) ([]*Task, string) {
 	var internalTasks []*InternalTask
 	for key, projectPair := range pairProjects(gitlabProjects, localProjects) {
 		// We have a remote and local copy, only need to pull
@@ -304,13 +304,12 @@ func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project,
 		})
 	}
 
-	println(text.FgHiGreen.Sprintf("\n" +
-		text.Pad("Action", messageLength+2, ' ') +
+	header := text.Pad("Action", messageLength+2, ' ') +
 		text.Pad("Project", keyLength+2, ' ') +
 		text.Pad("Branch", branchLength+3, ' ') +
-		"Status"))
+		"Status"
 
-	return tasks
+	return tasks, header
 }
 
 type ProjectPair struct {
