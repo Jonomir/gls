@@ -119,7 +119,9 @@ func main() {
 	pw.SetTrackerLength(40)
 	pw.SetTrackerPosition(progress.PositionRight)
 	pw.SetUpdateFrequency(time.Millisecond * 100)
+	pw.Style().Visibility.Value = false
 	pw.Style().Colors = progress.StyleColorsExample
+	pw.Style().Colors.Percent = text.Colors{text.FgCyan}
 
 	go pw.Render()
 

@@ -77,6 +77,7 @@ func execCommand(cmd *exec.Cmd, lineProcessor func(string)) error {
 	}
 
 	scanner := bufio.NewScanner(stderr)
+	scanner.Split(scanLines)
 	for scanner.Scan() {
 		lineProcessor(scanner.Text())
 	}
@@ -87,4 +88,22 @@ func execCommand(cmd *exec.Cmd, lineProcessor func(string)) error {
 	}
 
 	return cmd.Wait()
+}
+
+func scanLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+
+	for i, b := range data {
+		if b == '\n' || b == '\r' {
+			return i + 1, data[:i], nil
+		}
+	}
+	// If we're at EOF, we have a final, non-terminated line. Return it.
+	if atEOF {
+		return len(data), data, nil
+	}
+	// Request more data.
+	return 0, nil, nil
 }
