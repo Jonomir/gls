@@ -1,7 +1,6 @@
 package main
 
 import (
-	"fmt"
 	"github.com/cristalhq/aconfig"
 	"github.com/cristalhq/aconfig/aconfigdotenv"
 	"github.com/jedib0t/go-pretty/v6/progress"
@@ -54,10 +53,10 @@ func loadConfig() Config {
 	}
 
 	if *helpFlag {
-		fmt.Println("Usage: gls [flags]")
+		println("Usage: gls [flags]")
 		flags.PrintDefaults()
-		fmt.Println("Flags can also be passed via environment variables with prefix 'GLS_'")
-		fmt.Println("Or via file at $HOME/.gls in format KEY=value")
+		println("Flags can also be passed via environment variables with prefix 'GLS_'")
+		println("Or via file at $HOME/.gls in format KEY=value")
 		os.Exit(0)
 	}
 
@@ -97,16 +96,19 @@ func main() {
 		log.Fatalf("Error creating gitlab client: %v", err)
 	}
 
+	println(text.FgCyan.Sprintf("Fetching active Gitlab projects from %s", cfg.Gitlab.Url))
 	gitlabProjects, err := gl.GetActiveGitlabProjects(cfg.Path.Gitlab)
 	if err != nil {
 		log.Fatalf("Error getting gitlab projects: %v", err)
 	}
 
+	println(text.FgCyan.Sprintf("Loading local projects in %s", cfg.Path.Local))
 	localProjects, err := git.GetLocalProjects(cfg.Path.Local)
 	if err != nil {
 		log.Fatalf("Error getting local projects: %v", err)
 	}
 
+	println(text.FgCyan.Sprintf("Creating tasklist"))
 	tasks := createTasks(gitlabProjects, localProjects, cfg.Path.Local)
 
 	pw := progress.NewWriter()
@@ -118,17 +120,18 @@ func main() {
 	pw.SetTrackerPosition(progress.PositionRight)
 	pw.SetUpdateFrequency(time.Millisecond * 100)
 	pw.Style().Colors = progress.StyleColorsExample
-	pw.SetPinnedMessages("Syncing projects...")
 
 	go pw.Render()
-	executeTasks(tasks, 1, pw)
+
+	println(text.FgCyan.Sprintf("Starting task execution"))
+	executeTasks(tasks, 5, pw)
 
 	time.Sleep(time.Millisecond * 100) // wait for one more render cycle
 	pw.Stop()
 
 	for _, task := range tasks {
 		if task.Error.Load() != nil {
-			text.FgRed.Sprintf("Failed to %s %s %v\n", task.Action, task.Path, task.Error.Load())
+			println(text.FgRed.Sprintf("Failed to %s %s %v", task.Action, task.Path, task.Error.Load()))
 		}
 	}
 }
