@@ -29,7 +29,7 @@ func New(url string, token string) (*Gitlab, error) {
 	return &gl, nil
 }
 
-func (gl *Gitlab) GetActiveGitlabProjects(groupPath string) ([]*Project, error) {
+func (gl *Gitlab) GetActiveGitlabProjects(groupPath string, progress func(string)) ([]*Project, error) {
 
 	group, err := getGroupByPath(gl.client, groupPath)
 	if err != nil {
@@ -40,7 +40,7 @@ func (gl *Gitlab) GetActiveGitlabProjects(groupPath string) ([]*Project, error) 
 		return nil, fmt.Errorf("group %s not found", groupPath)
 	}
 
-	gitlabProjects, err := listProjectsRecursively(gl.client, group)
+	gitlabProjects, err := listProjectsRecursively(gl.client, group, progress)
 	if err != nil {
 		return nil, err
 	}
@@ -74,7 +74,9 @@ func getGroupByPath(gl *gitlab.Client, path string) (*gitlab.Group, error) {
 	return nil, nil
 }
 
-func listProjectsRecursively(gl *gitlab.Client, group *gitlab.Group) ([]*gitlab.Project, error) {
+func listProjectsRecursively(gl *gitlab.Client, group *gitlab.Group, progress func(string)) ([]*gitlab.Project, error) {
+	progress(group.FullPath)
+
 	projects, _, err := gl.Groups.ListGroupProjects(group.ID, nil)
 	if err != nil {
 		return nil, err
@@ -86,7 +88,7 @@ func listProjectsRecursively(gl *gitlab.Client, group *gitlab.Group) ([]*gitlab.
 	}
 
 	for _, subgroup := range subgroups {
-		subprojects, err := listProjectsRecursively(gl, subgroup)
+		subprojects, err := listProjectsRecursively(gl, subgroup, progress)
 		if err != nil {
 			return nil, err
 		}
