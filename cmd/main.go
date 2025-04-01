@@ -145,7 +145,7 @@ func main() {
 
 	for _, task := range tasks {
 		if task.Error.Load() != nil {
-			println(text.FgRed.Sprintf("Failed to %s %s %v", task.Action, task.Path, task.Error.Load()))
+			println(text.FgHiRed.Sprintf("Failed to %s %s %v", task.Action, task.Path, task.Error.Load()))
 		}
 	}
 }
@@ -254,7 +254,7 @@ func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project,
 		// We only have a local copy, ask if we should delete it
 		if projectPair.GitlabProject == nil && projectPair.LocalProject != nil {
 
-			if askForConfirmation(text.FgHiMagenta.Sprintf("Do you want to delete %s?", key)) {
+			if askForConfirmation(text.FgMagenta.Sprintf("Do you want to delete %s?", key)) {
 				internalTasks = append(internalTasks, &InternalTask{
 					Key:     key,
 					Action:  Delete,
@@ -266,7 +266,7 @@ func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project,
 					Key:     key,
 					Action:  Delete,
 					Skipped: true,
-					Message: "Skipped deleting",
+					Message: "Skipped deletion",
 					Branch:  projectPair.LocalProject.Branch,
 				})
 			}
