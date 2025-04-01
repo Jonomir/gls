@@ -20,7 +20,8 @@ import (
 )
 
 type Config struct {
-	Gitlab struct {
+	Workers int `default:"5" usage:"Number of parallel workers"`
+	Gitlab  struct {
 		Url   string `default:"https://gitlab.com" usage:"Gitlab URL"`
 		Token string `required:"true" usage:"Gitlab token for authentication"`
 	}
@@ -138,7 +139,7 @@ func main() {
 	println(text.FgHiGreen.Sprintf("\n%s", header))
 	go pw.Render()
 
-	executeTasks(tasks, 5, pw)
+	executeTasks(tasks, cfg.Workers, pw)
 
 	time.Sleep(time.Millisecond * 100) // wait for one more render cycle
 	pw.Stop()
