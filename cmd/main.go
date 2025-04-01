@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"fmt"
 	"github.com/cristalhq/aconfig"
 	"github.com/cristalhq/aconfig/aconfigdotenv"
 	"github.com/jedib0t/go-pretty/v6/progress"
@@ -12,6 +14,7 @@ import (
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 )
@@ -251,8 +254,7 @@ func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project,
 		// We only have a local copy, ask if we should delete it
 		if projectPair.GitlabProject == nil && projectPair.LocalProject != nil {
 
-			//TODO implement user prompt
-			if true {
+			if askForConfirmation(text.FgHiMagenta.Sprintf("Do you want to delete %s?", key)) {
 				internalTasks = append(internalTasks, &InternalTask{
 					Key:     key,
 					Action:  Delete,
@@ -338,4 +340,25 @@ func pairProjects(gitlabProjects []*gitlab.Project, localProjects []*git.Project
 		projectPairs[project.Path] = projectPair
 	}
 	return projectPairs
+}
+
+func askForConfirmation(promt string) bool {
+	reader := bufio.NewReader(os.Stdin)
+
+	for {
+		fmt.Printf("%s [y/n]: ", promt)
+
+		response, err := reader.ReadString('\n')
+		if err != nil {
+			log.Fatalf("Error reading input: %v", err)
+		}
+
+		response = strings.ToLower(strings.TrimSpace(response))
+
+		if response == "y" || response == "yes" {
+			return true
+		} else if response == "n" || response == "no" {
+			return false
+		}
+	}
 }
