@@ -47,7 +47,8 @@ func (gl *Gitlab) GetActiveGitlabProjects(groupPath string, progress func(string
 
 	var projects []*Project
 	for _, project := range gitlabProjects {
-		if !project.Archived {
+		// We only care about projects that are not archived and not shared with us
+		if !project.Archived && len(project.SharedWithGroups) == 0 {
 			projects = append(projects, &Project{
 				Path:          strings.TrimPrefix(project.PathWithNamespace, groupPath+"/"),
 				DefaultBranch: project.DefaultBranch,
