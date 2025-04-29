@@ -12,8 +12,7 @@ import (
 	"go.uber.org/atomic"
 	"log"
 	"os"
-	"regexp"
-	"strconv"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -24,10 +23,14 @@ type Config struct {
 	Gitlab  struct {
 		Url   string `default:"https://gitlab.com" usage:"Gitlab URL"`
 		Token string `required:"true" usage:"Gitlab token for authentication"`
+		Group string `required:"true" usage:"Gitlab group to clone recursively"`
 	}
-	Path struct {
-		Gitlab string `required:"true" usage:"Gitlab group to clone recursively"`
-		Local  string `required:"true" usage:"Local path to clone to"`
+	Local struct {
+		Path string `required:"true" usage:"Local path to clone to"`
+		SSH  struct {
+			Key        string `default:"~/.ssh/id_rsa" usage:"Path to ssh key for pull and clone"`
+			Passphrase string `default:"" usage:"Passphrase of ssh key"`
+		}
 	}
 }
 
@@ -42,7 +45,7 @@ func loadConfig() Config {
 		EnvPrefix:     "GLS",
 		FlagDelimiter: "-",
 
-		Files: []string{homedir + "/.gls"},
+		Files: []string{filepath.Join(homedir, ".gls")},
 		FileDecoders: map[string]aconfig.FileDecoder{
 			".gls": aconfigdotenv.New(),
 		},
@@ -64,10 +67,22 @@ func loadConfig() Config {
 		os.Exit(0)
 	}
 
-	if err := loader.Load(); err != nil {
+	err = loader.Load()
+	if err != nil {
 		log.Fatalf("Error loading config: %v", err)
 	}
+
+	cfg.Local.Path = expandHome(homedir, cfg.Local.Path)
+	cfg.Local.SSH.Key = expandHome(homedir, cfg.Local.SSH.Key)
+
 	return cfg
+}
+
+func expandHome(homedir string, path string) string {
+	if strings.HasPrefix(path, "~/") {
+		path = filepath.Join(homedir, path[2:])
+	}
+	return path
 }
 
 type Action string
@@ -95,23 +110,28 @@ func main() {
 		log.Fatalf("Error creating gitlab client: %v", err)
 	}
 
+	gi, err := git.New(cfg.Local.SSH.Key, cfg.Local.SSH.Passphrase)
+	if err != nil {
+		log.Fatalf("Error creating git client: %v", err)
+	}
+
 	println(text.FgCyan.Sprintf("Fetching active Gitlab projects from %s", cfg.Gitlab.Url))
-	gitlabProjects, err := gl.GetActiveGitlabProjects(cfg.Path.Gitlab, func(group string) {
+	gitlabProjects, err := gl.GetActiveGitlabProjects(cfg.Gitlab.Group, func(group string) {
 		println(text.FgCyan.Sprintf("Loading group %s", group))
 	})
 	if err != nil {
 		log.Fatalf("Error getting gitlab projects: %v", err)
 	}
 
-	println(text.FgCyan.Sprintf("Loading local projects in %s", cfg.Path.Local))
-	localProjects, err := git.GetLocalProjects(cfg.Path.Local)
+	println(text.FgCyan.Sprintf("Loading local projects in %s", cfg.Local.Path))
+	localProjects, err := git.GetLocalProjects(cfg.Local.Path)
 	if err != nil {
 		log.Fatalf("Error getting local projects: %v", err)
 	}
 
 	println(text.FgCyan.Sprintf("Determining actions"))
 
-	tasks, header := createTasks(gitlabProjects, localProjects, cfg.Path.Local)
+	tasks, header := createTasks(gitlabProjects, localProjects, cfg.Local.Path)
 
 	var messageLength = 0
 	for _, task := range tasks {
@@ -144,20 +164,19 @@ func main() {
 	println(text.FgHiGreen.Sprintf("\n%s", header))
 	go pw.Render()
 
-	executeTasks(tasks, cfg.Workers, pw)
+	executeTasks(tasks, cfg.Workers, pw, gi)
 
 	time.Sleep(time.Millisecond * 100) // wait for one more render cycle
 	pw.Stop()
 
-	println()
 	for _, task := range tasks {
 		if task.Error.Load() != nil {
-			println(text.FgHiRed.Sprintf("Failed to %s %s %v", task.Action, task.Path, task.Error.Load()))
+			println(text.FgHiRed.Sprintf("\nFailed to %s %s: %v", task.Action, task.Path, task.Error.Load()))
 		}
 	}
 }
 
-func executeTasks(tasks []*Task, numWorkers int, pw progress.Writer) {
+func executeTasks(tasks []*Task, numWorkers int, pw progress.Writer, gi *git.Git) {
 	taskQueue := make(chan *Task, len(tasks))
 	var wg sync.WaitGroup
 	for i := 1; i <= numWorkers; i++ {
@@ -170,7 +189,7 @@ func executeTasks(tasks []*Task, numWorkers int, pw progress.Writer) {
 					task.Tracker.MarkAsDone()
 				} else {
 					task.Tracker.Start()
-					err := executeTask(task)
+					err := executeTask(task, gi)
 					if err != nil {
 						task.Tracker.MarkAsErrored()
 						task.Error.Store(err)
@@ -190,25 +209,12 @@ func executeTasks(tasks []*Task, numWorkers int, pw progress.Writer) {
 	wg.Wait()
 }
 
-func executeTask(task *Task) error {
-	pattern := regexp.MustCompile(`^Receiving objects:.*\((\d+)/(\d+)\)`)
-
-	lineProcessor := func(line string) {
-		matches := pattern.FindStringSubmatch(line)
-
-		if len(matches) == 3 { // matches[0] is the full match, [1] and [2] are the two numbers
-			current, _ := strconv.Atoi(matches[1])
-			total, _ := strconv.Atoi(matches[2])
-			task.Tracker.UpdateTotal(int64(total))
-			task.Tracker.SetValue(int64(current))
-		}
-	}
-
+func executeTask(task *Task, gi *git.Git) error {
 	switch task.Action {
 	case Clone:
-		return git.CloneProject(task.CloneUrl, task.Path, lineProcessor)
+		return gi.CloneProject(task.CloneUrl, task.Path)
 	case Pull:
-		return git.PullProject(task.Path, lineProcessor)
+		return gi.PullProject(task.Path)
 	case Delete:
 		return git.DeleteProject(task.Path)
 	}
@@ -303,7 +309,7 @@ func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project,
 	var tasks []*Task
 	for _, internalTask := range internalTasks {
 		tasks = append(tasks, &Task{
-			Path:     localPath + "/" + internalTask.Key,
+			Path:     filepath.Join(localPath, internalTask.Key),
 			CloneUrl: internalTask.CloneUrl,
 			Action:   internalTask.Action,
 			Skipped:  internalTask.Skipped,

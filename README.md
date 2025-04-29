@@ -22,16 +22,24 @@ Configuration can be done in three ways. These are the priorities
 
 Environment variables have the prefix `GLS_`
 
-Config must me located in the users home dir at `~/.gls`
+Config must be located in the users home dir at `~/.gls`
 
-Example:
+Minimum viable Config:
+```
+GITLAB_TOKEN=<token>
+GITLAB_GROUP=<companyname>
+LOCAL_PATH=~/Projects
+```
+
+Full Config:
 ```
 WORKERS=10
+
+GITLAB_URL=https://gitlab.example.com
 GITLAB_TOKEN=<token>
-PATH_GITLAB=<companyname>
-PATH_LOCAL=/Users/<username>/Projects
+GITLAB_GROUP=<companyname>
+
+LOCAL_PATH=~/Projects
+LOCAL_SSH_KEY=~/.ssh/my_key
+LOCAL_SSH_PASSPHRASE=<secret>
 ```
-
-## Dependencies
-
-This tool needs git to be present in the PATH
