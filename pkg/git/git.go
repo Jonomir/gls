@@ -1,35 +1,18 @@
 package git
 
 import (
-	"errors"
+	"bufio"
+	"fmt"
 	"github.com/go-git/go-git/v5"
-	"github.com/go-git/go-git/v5/plumbing/transport/ssh"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
 
-type Git struct {
-	auth *ssh.PublicKeys
-}
-
 type Project struct {
 	Path   string
 	Branch string
-}
-
-func New(keyFile string, pass string) (*Git, error) {
-	auth, err := ssh.NewPublicKeysFromFile("git", keyFile, pass)
-
-	if err != nil {
-		return nil, err
-	}
-
-	gi := Git{
-		auth: auth,
-	}
-
-	return &gi, nil
 }
 
 func GetLocalProjects(localPath string) ([]*Project, error) {
@@ -74,33 +57,67 @@ func DeleteProject(localPath string) error {
 	return os.RemoveAll(localPath)
 }
 
-func (gi *Git) CloneProject(cloneUrl string, localPath string) error {
-	_, err := git.PlainClone(localPath, false, &git.CloneOptions{
-		URL:  cloneUrl,
-		Auth: gi.auth,
-	})
-	return err
+// It would be nice to use go-git for clone and pull too, but go-git pull overwrites existing changes in the repo
+// It also requires configuring an SSH key. While just running git in the right place already does all this for you
+
+func CloneProject(cloneUrl string, localPath string, lineProcessor func(string)) error {
+	cmd := exec.Command("git", "clone", "--progress", cloneUrl, localPath)
+	return execCommand(cmd, lineProcessor)
 }
 
-func (gi *Git) PullProject(localPath string) error {
-	repo, err := git.PlainOpen(localPath)
+func PullProject(localPath string, lineProcessor func(string)) error {
+	cmd := exec.Command("git", "pull", "--progress")
+	cmd.Dir = localPath
+	return execCommand(cmd, lineProcessor)
+}
+
+func execCommand(cmd *exec.Cmd, lineProcessor func(string)) error {
+	stderr, err := cmd.StderrPipe() // git reports progress on stderr
 	if err != nil {
 		return err
 	}
 
-	worktree, err := repo.Worktree()
+	err = cmd.Start()
 	if err != nil {
 		return err
 	}
 
-	err = worktree.Pull(&git.PullOptions{
-		RemoteName: "origin",
-		Auth:       gi.auth,
-	})
-
-	if errors.Is(err, git.NoErrAlreadyUpToDate) {
-		return nil
+	var out string
+	scanner := bufio.NewScanner(stderr)
+	scanner.Split(scanLines)
+	for scanner.Scan() {
+		line := scanner.Text()
+		out += fmt.Sprintln(line)
+		lineProcessor(line)
 	}
 
-	return err
+	err = scanner.Err()
+	if err != nil {
+		return err
+	}
+
+	err = cmd.Wait()
+	if err != nil {
+		return fmt.Errorf("%v\n%s", err, out)
+	}
+
+	return nil
+}
+
+func scanLines(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	if atEOF && len(data) == 0 {
+		return 0, nil, nil
+	}
+
+	for i, b := range data {
+		if b == '\n' || b == '\r' {
+			return i + 1, data[:i], nil
+		}
+	}
+	// If we're at EOF, we have a final, non-terminated line. Return it.
+	if atEOF {
+		return len(data), data, nil
+	}
+	// Request more data.
+	return 0, nil, nil
 }

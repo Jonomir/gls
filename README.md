@@ -4,10 +4,11 @@ This is a small go program that syncs gitlab projects to your machine, preservin
 
 ## Building
 
-build with
+build and install with
 
 ```sh
 go build -o gls cmd/main.go
+mv gls /usr/local/bin
 ```
 
 
@@ -34,12 +35,12 @@ LOCAL_PATH=~/Projects
 Full Config:
 ```
 WORKERS=10
-
 GITLAB_URL=https://gitlab.example.com
 GITLAB_TOKEN=<token>
 GITLAB_GROUP=<companyname>
-
 LOCAL_PATH=~/Projects
-LOCAL_SSH_KEY=~/.ssh/my_key
-LOCAL_SSH_PASSPHRASE=<secret>
 ```
+
+## Dependencies
+
+This tool needs git to be present in the PATH, because it executes git commands in your local directories

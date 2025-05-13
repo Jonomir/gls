@@ -9,12 +9,14 @@ import (
 	"github.com/jedib0t/go-pretty/v6/text"
 	"gls/pkg/git"
 	"gls/pkg/gitlab"
-	"go.uber.org/atomic"
 	"log"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -27,10 +29,6 @@ type Config struct {
 	}
 	Local struct {
 		Path string `required:"true" usage:"Local path to clone to"`
-		SSH  struct {
-			Key        string `default:"~/.ssh/id_rsa" usage:"Path to ssh key for pull and clone"`
-			Passphrase string `default:"" usage:"Passphrase of ssh key"`
-		}
 	}
 }
 
@@ -73,7 +71,6 @@ func loadConfig() Config {
 	}
 
 	cfg.Local.Path = expandHome(homedir, cfg.Local.Path)
-	cfg.Local.SSH.Key = expandHome(homedir, cfg.Local.SSH.Key)
 
 	return cfg
 }
@@ -99,7 +96,7 @@ type Task struct {
 	Action   Action
 	Tracker  *progress.Tracker
 	Skipped  bool
-	Error    atomic.Error
+	Error    atomic.Pointer[error]
 }
 
 func main() {
@@ -108,11 +105,6 @@ func main() {
 	gl, err := gitlab.New(cfg.Gitlab.Url, cfg.Gitlab.Token)
 	if err != nil {
 		log.Fatalf("Error creating gitlab client: %v", err)
-	}
-
-	gi, err := git.New(cfg.Local.SSH.Key, cfg.Local.SSH.Passphrase)
-	if err != nil {
-		log.Fatalf("Error creating git client: %v", err)
 	}
 
 	println(text.FgCyan.Sprintf("Fetching active Gitlab projects from %s", cfg.Gitlab.Url))
@@ -164,19 +156,19 @@ func main() {
 	println(text.FgHiGreen.Sprintf("\n%s", header))
 	go pw.Render()
 
-	executeTasks(tasks, cfg.Workers, pw, gi)
+	executeTasks(tasks, cfg.Workers, pw)
 
 	time.Sleep(time.Millisecond * 100) // wait for one more render cycle
 	pw.Stop()
 
 	for _, task := range tasks {
 		if task.Error.Load() != nil {
-			println(text.FgHiRed.Sprintf("\nFailed to %s %s: %v", task.Action, task.Path, task.Error.Load()))
+			println(text.FgHiRed.Sprintf("\nFailed to %s %s: %v", task.Action, task.Path, *task.Error.Load()))
 		}
 	}
 }
 
-func executeTasks(tasks []*Task, numWorkers int, pw progress.Writer, gi *git.Git) {
+func executeTasks(tasks []*Task, numWorkers int, pw progress.Writer) {
 	taskQueue := make(chan *Task, len(tasks))
 	var wg sync.WaitGroup
 	for i := 1; i <= numWorkers; i++ {
@@ -189,10 +181,10 @@ func executeTasks(tasks []*Task, numWorkers int, pw progress.Writer, gi *git.Git
 					task.Tracker.MarkAsDone()
 				} else {
 					task.Tracker.Start()
-					err := executeTask(task, gi)
+					err := executeTask(task)
 					if err != nil {
 						task.Tracker.MarkAsErrored()
-						task.Error.Store(err)
+						task.Error.Store(&err)
 					} else {
 						task.Tracker.MarkAsDone()
 					}
@@ -209,12 +201,25 @@ func executeTasks(tasks []*Task, numWorkers int, pw progress.Writer, gi *git.Git
 	wg.Wait()
 }
 
-func executeTask(task *Task, gi *git.Git) error {
+func executeTask(task *Task) error {
+	pattern := regexp.MustCompile(`^Receiving objects:.*\((\d+)/(\d+)\)`)
+
+	lineProcessor := func(line string) {
+		matches := pattern.FindStringSubmatch(line)
+
+		if len(matches) == 3 { // matches[0] is the full match, [1] and [2] are the two numbers
+			current, _ := strconv.Atoi(matches[1])
+			total, _ := strconv.Atoi(matches[2])
+			task.Tracker.UpdateTotal(int64(total))
+			task.Tracker.SetValue(int64(current))
+		}
+	}
+
 	switch task.Action {
 	case Clone:
-		return gi.CloneProject(task.CloneUrl, task.Path)
+		return git.CloneProject(task.CloneUrl, task.Path, lineProcessor)
 	case Pull:
-		return gi.PullProject(task.Path)
+		return git.PullProject(task.Path, lineProcessor)
 	case Delete:
 		return git.DeleteProject(task.Path)
 	}
@@ -313,7 +318,7 @@ func createTasks(gitlabProjects []*gitlab.Project, localProjects []*git.Project,
 			CloneUrl: internalTask.CloneUrl,
 			Action:   internalTask.Action,
 			Skipped:  internalTask.Skipped,
-			Error:    atomic.Error{},
+			Error:    atomic.Pointer[error]{},
 			Tracker: &progress.Tracker{
 				Message: text.Pad(internalTask.Message, messageLength+2, ' ') +
 					text.Pad(internalTask.Key, keyLength+2, ' ') +
