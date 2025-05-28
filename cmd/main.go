@@ -108,11 +108,11 @@ func main() {
 	}
 
 	println(text.FgCyan.Sprintf("Fetching active Gitlab projects from %s", cfg.Gitlab.Url))
-	gitlabProjects, err := gl.GetActiveGitlabProjects(cfg.Gitlab.Group, func(group string) {
+	gitlabProjects, errs := gl.GetActiveGitlabProjects(cfg.Gitlab.Group, func(group string) {
 		println(text.FgCyan.Sprintf("Loading group %s", group))
 	})
-	if err != nil {
-		log.Fatalf("Error getting gitlab projects: %v", err)
+	if len(errs) > 0 {
+		log.Fatalf("Errors getting gitlab projects: %v", errs)
 	}
 
 	println(text.FgCyan.Sprintf("Loading local projects in %s", cfg.Local.Path))

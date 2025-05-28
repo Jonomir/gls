@@ -30,35 +30,61 @@ func New(url string, token string) (*Gitlab, error) {
 	return &gl, nil
 }
 
-func (gl *Gitlab) GetActiveGitlabProjects(groupPath string, progress func(string)) ([]*Project, error) {
+func (gl *Gitlab) GetActiveGitlabProjects(groupPath string, progress func(string)) ([]*Project, []error) {
 
 	group, err := getGroupByPath(gl.client, groupPath)
 	if err != nil {
-		return nil, err
+		return nil, []error{err}
 	}
 
 	if group == nil {
-		return nil, fmt.Errorf("group %s not found", groupPath)
+		return nil, []error{fmt.Errorf("group %s not found", groupPath)}
 	}
 
-	gitlabProjects, err := listProjectsRecursively(gl.client, group, progress)
-	if err != nil {
-		return nil, err
-	}
+	var resChan = make(chan *gitlab.Project)
+	var errChan = make(chan error)
 
-	var projects []*Project
-	for _, project := range gitlabProjects {
-		// We only care about projects that are not archived and not shared with us
-		if !project.Archived && len(project.SharedWithGroups) == 0 {
-			projects = append(projects, &Project{
-				Path:          strings.TrimPrefix(project.PathWithNamespace, groupPath+"/"),
-				DefaultBranch: project.DefaultBranch,
-				CloneUrl:      project.SSHURLToRepo,
-			})
+	var pwg sync.WaitGroup
+	listProjectsRecursively(gl.client, group, progress, resChan, errChan, &pwg)
+
+	var result []*Project
+	var errors []error
+
+	var cwg sync.WaitGroup
+	cwg.Add(3)
+
+	go func() {
+		defer cwg.Done()
+
+		pwg.Wait()
+		close(resChan)
+		close(errChan)
+	}()
+
+	go func() {
+		defer cwg.Done()
+
+		for project := range resChan {
+			if !project.Archived && len(project.SharedWithGroups) == 0 {
+				result = append(result, &Project{
+					Path:          strings.TrimPrefix(project.PathWithNamespace, groupPath+"/"),
+					DefaultBranch: project.DefaultBranch,
+					CloneUrl:      project.SSHURLToRepo,
+				})
+			}
 		}
-	}
+	}()
 
-	return projects, nil
+	go func() {
+		defer cwg.Done()
+
+		for err := range errChan {
+			errors = append(errors, err)
+		}
+	}()
+
+	cwg.Wait()
+	return result, errors
 }
 
 func getGroupByPath(gl *gitlab.Client, path string) (*gitlab.Group, error) {
@@ -76,71 +102,31 @@ func getGroupByPath(gl *gitlab.Client, path string) (*gitlab.Group, error) {
 	return nil, nil
 }
 
-type Result struct {
-	Projects []*gitlab.Project
-	Err      error
-}
-
-func listProjectsRecursively(gl *gitlab.Client, group *gitlab.Group, progress func(string)) ([]*gitlab.Project, error) {
+func listProjectsRecursively(gl *gitlab.Client, group *gitlab.Group, progress func(string), resChan chan *gitlab.Project, errChan chan error, wg *sync.WaitGroup) {
 	progress(group.FullPath)
-
-	var wg sync.WaitGroup
-	var projects []*gitlab.Project
-	var subgroups []*gitlab.Group
-	var errProjects error
-	var errSubgroups error
-
 	wg.Add(2)
 
 	go func() {
 		defer wg.Done()
-		projects, _, errProjects = gl.Groups.ListGroupProjects(group.ID, nil)
+		projects, _, err := gl.Groups.ListGroupProjects(group.ID, nil)
+		if err != nil {
+			errChan <- err
+		}
+
+		for _, project := range projects {
+			resChan <- project
+		}
 	}()
 
 	go func() {
 		defer wg.Done()
-		subgroups, _, errSubgroups = gl.Groups.ListSubGroups(group.ID, nil)
-	}()
-
-	wg.Wait()
-
-	if errProjects != nil {
-		return nil, errProjects
-	}
-
-	if errSubgroups != nil {
-		return nil, errSubgroups
-	}
-
-	if len(subgroups) > 0 {
-		var wg sync.WaitGroup
-
-		resultsChan := make(chan Result, len(subgroups))
+		subgroups, _, err := gl.Groups.ListSubGroups(group.ID, nil)
+		if err != nil {
+			errChan <- err
+		}
 
 		for _, subgroup := range subgroups {
-			wg.Add(1)
-
-			go func() {
-				defer wg.Done()
-				subprojects, err := listProjectsRecursively(gl, subgroup, progress)
-				resultsChan <- Result{
-					Projects: subprojects,
-					Err:      err,
-				}
-			}()
+			listProjectsRecursively(gl, subgroup, progress, resChan, errChan, wg)
 		}
-
-		wg.Wait()
-		close(resultsChan)
-
-		for res := range resultsChan {
-			if res.Err != nil {
-				return nil, res.Err
-			}
-
-			projects = append(projects, res.Projects...)
-		}
-	}
-
-	return projects, nil
+	}()
 }
