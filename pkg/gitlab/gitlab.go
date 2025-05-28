@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"gitlab.com/gitlab-org/api/client-go"
 	"strings"
+	"sync"
 )
 
 type Gitlab struct {
@@ -75,26 +76,70 @@ func getGroupByPath(gl *gitlab.Client, path string) (*gitlab.Group, error) {
 	return nil, nil
 }
 
+type Result struct {
+	Projects []*gitlab.Project
+	Err      error
+}
+
 func listProjectsRecursively(gl *gitlab.Client, group *gitlab.Group, progress func(string)) ([]*gitlab.Project, error) {
 	progress(group.FullPath)
 
-	projects, _, err := gl.Groups.ListGroupProjects(group.ID, nil)
-	if err != nil {
-		return nil, err
+	var wg sync.WaitGroup
+	var projects []*gitlab.Project
+	var subgroups []*gitlab.Group
+	var errProjects error
+	var errSubgroups error
+
+	wg.Add(2)
+
+	go func() {
+		defer wg.Done()
+		projects, _, errProjects = gl.Groups.ListGroupProjects(group.ID, nil)
+	}()
+
+	go func() {
+		defer wg.Done()
+		subgroups, _, errSubgroups = gl.Groups.ListSubGroups(group.ID, nil)
+	}()
+
+	wg.Wait()
+
+	if errProjects != nil {
+		return nil, errProjects
 	}
 
-	subgroups, _, err := gl.Groups.ListSubGroups(group.ID, nil)
-	if err != nil {
-		return nil, err
+	if errSubgroups != nil {
+		return nil, errSubgroups
 	}
 
-	for _, subgroup := range subgroups {
-		subprojects, err := listProjectsRecursively(gl, subgroup, progress)
-		if err != nil {
-			return nil, err
+	if len(subgroups) > 0 {
+		var wg sync.WaitGroup
+
+		resultsChan := make(chan Result, len(subgroups))
+
+		for _, subgroup := range subgroups {
+			wg.Add(1)
+
+			go func() {
+				defer wg.Done()
+				subprojects, err := listProjectsRecursively(gl, subgroup, progress)
+				resultsChan <- Result{
+					Projects: subprojects,
+					Err:      err,
+				}
+			}()
 		}
 
-		projects = append(projects, subprojects...)
+		wg.Wait()
+		close(resultsChan)
+
+		for res := range resultsChan {
+			if res.Err != nil {
+				return nil, res.Err
+			}
+
+			projects = append(projects, res.Projects...)
+		}
 	}
 
 	return projects, nil
