@@ -3,11 +3,12 @@ package git
 import (
 	"bufio"
 	"fmt"
-	"github.com/go-git/go-git/v5"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/go-git/go-git/v5"
 )
 
 type Project struct {
@@ -34,7 +35,8 @@ func GetLocalProjects(localPath string) ([]*Project, error) {
 
 		headRef, err := repo.Head()
 		if err != nil {
-			return err
+			fmt.Printf("repo at %s contains has no repo HEAD\n", path)
+			return nil // folder has no remote, ignore
 		}
 
 		projects = append(projects, &Project{
