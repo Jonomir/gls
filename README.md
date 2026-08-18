@@ -1,5 +1,7 @@
 # gls
 
+![GLS delivering a GitLab package](delivery.jpg)
+
 This is a small go program that syncs gitlab projects to your machine, preserving the group structure
 
 ## Building
