@@ -2,6 +2,7 @@ package git
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -9,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/go-git/go-git/v5"
+	"github.com/go-git/go-git/v5/plumbing"
 )
 
 type Project struct {
@@ -33,10 +35,20 @@ func GetLocalProjects(localPath string) ([]*Project, error) {
 			return nil // folder not a git repo
 		}
 
+		remotes, err := repo.Remotes()
+		if err != nil {
+			return err
+		}
+		if len(remotes) == 0 {
+			return filepath.SkipDir // local-only repo, never a Gitlab project
+		}
+
 		headRef, err := repo.Head()
 		if err != nil {
-			fmt.Printf("repo at %s contains has no repo HEAD\n", path)
-			return nil // folder has no remote, ignore
+			if errors.Is(err, plumbing.ErrReferenceNotFound) {
+				return filepath.SkipDir // HEAD not born yet, nothing to sync
+			}
+			return err
 		}
 
 		projects = append(projects, &Project{
