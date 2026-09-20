@@ -2,9 +2,10 @@ package gitlab
 
 import (
 	"fmt"
-	"gitlab.com/gitlab-org/api/client-go/v2"
 	"strings"
 	"sync"
+
+	"gitlab.com/gitlab-org/api/client-go/v3"
 )
 
 type Gitlab struct {
@@ -88,15 +89,24 @@ func (gl *Gitlab) GetActiveGitlabProjects(groupPath string, progress func(string
 }
 
 func getGroupByPath(gl *gitlab.Client, path string) (*gitlab.Group, error) {
-	groups, _, err := gl.Groups.SearchGroup(path)
-	if err != nil {
-		return nil, err
-	}
-
-	for _, group := range groups {
-		if group.FullPath == path {
-			return group, nil
+	var requestOptions []gitlab.RequestOptionFunc
+	for {
+		groups, response, err := gl.Groups.SearchGroup(path, requestOptions...)
+		if err != nil {
+			return nil, err
 		}
+
+		for _, group := range groups {
+			if group.FullPath == path {
+				return group, nil
+			}
+		}
+
+		next, hasNext := gitlab.WithNext(response)
+		if !hasNext {
+			break
+		}
+		requestOptions = []gitlab.RequestOptionFunc{next}
 	}
 
 	return nil, nil
@@ -108,25 +118,47 @@ func listProjectsRecursively(gl *gitlab.Client, group *gitlab.Group, progress fu
 
 	go func() {
 		defer wg.Done()
-		projects, _, err := gl.Groups.ListGroupProjects(group.ID, nil)
-		if err != nil {
-			errChan <- err
-		}
 
-		for _, project := range projects {
-			resChan <- project
+		var requestOptions []gitlab.RequestOptionFunc
+		for {
+			projects, response, err := gl.Groups.ListGroupProjects(group.ID, nil, requestOptions...)
+			if err != nil {
+				errChan <- err
+				return
+			}
+
+			for _, project := range projects {
+				resChan <- project
+			}
+
+			next, hasNext := gitlab.WithNext(response)
+			if !hasNext {
+				break
+			}
+			requestOptions = []gitlab.RequestOptionFunc{next}
 		}
 	}()
 
 	go func() {
 		defer wg.Done()
-		subgroups, _, err := gl.Groups.ListSubGroups(group.ID, nil)
-		if err != nil {
-			errChan <- err
-		}
 
-		for _, subgroup := range subgroups {
-			listProjectsRecursively(gl, subgroup, progress, resChan, errChan, wg)
+		var requestOptions []gitlab.RequestOptionFunc
+		for {
+			subgroups, response, err := gl.Groups.ListSubGroups(group.ID, nil, requestOptions...)
+			if err != nil {
+				errChan <- err
+				return
+			}
+
+			for _, subgroup := range subgroups {
+				listProjectsRecursively(gl, subgroup, progress, resChan, errChan, wg)
+			}
+
+			next, hasNext := gitlab.WithNext(response)
+			if !hasNext {
+				break
+			}
+			requestOptions = []gitlab.RequestOptionFunc{next}
 		}
 	}()
 }
